@@ -6,6 +6,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
@@ -59,7 +61,11 @@ try {
   throw e;
 }
 // Phones and small screens get a lighter version (no mirror floor, no shadows, less rain).
-const LOW = matchMedia('(pointer: coarse)').matches || innerWidth < 900;
+// Decided by the device (touch-only or a small physical screen), not the window size,
+// so a narrow desktop window still gets full quality. ?quality=low|high overrides it.
+const qualityParam = new URLSearchParams(location.search).get('quality');
+const LOW = qualityParam ? qualityParam === 'low'
+  : (matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches) || Math.min(screen.width, screen.height) < 600;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, LOW ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -92,7 +98,25 @@ function neonEnvironment() {
   tube(0xffffff, 2.6, 34, 1, 34, 0, 29.5, 0);
   return pmrem.fromScene(env, 0.035).texture;
 }
-scene.environment = neonEnvironment();
+// A photo studio: charcoal walls and big white softboxes. This is what the metal,
+// glass and plastic reflect in Studio mode, the same trick product photographers use.
+function studioEnvironment() {
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(new THREE.BoxGeometry(100, 60, 100), new THREE.MeshBasicMaterial({ color: 0x141518, side: THREE.BackSide })));
+  const panel = (k, w, h, d, x, y, z, tint = 0xffffff) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(tint).multiplyScalar(k) }));
+    m.position.set(x, y, z);
+    env.add(m);
+  };
+  panel(5, 46, 1, 30, -6, 29.5, 8);               // overhead softbox
+  panel(2.2, 1, 36, 14, -49, 6, 10, 0xfff1e2);     // warm left strip
+  panel(3, 1, 40, 12, 49, 6, -4, 0xe6efff);        // cool right strip
+  panel(1.4, 60, 14, 1, 0, 8, -49);                // back rim
+  panel(0.5, 100, 1, 100, 0, -29.5, 0, 0x2a2b2f);  // floor bounce
+  return pmrem.fromScene(env, 0.02).texture;
+}
+const ENV = { neon: neonEnvironment(), studio: studioEnvironment() };
+scene.environment = ENV.studio;
 scene.environmentIntensity = 1.0;
 
 const camera = new THREE.PerspectiveCamera(38, Math.max(1, innerWidth) / Math.max(1, innerHeight), 0.5, 3000);
@@ -110,11 +134,33 @@ labelRenderer.setSize(innerWidth, innerHeight);
 Object.assign(labelRenderer.domElement.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: 3 });
 document.body.appendChild(labelRenderer.domElement);
 
-const composer = new EffectComposer(renderer);
-composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Render into a multisampled target so edges stay smooth even with post-processing on.
+const DPR = Math.min(window.devicePixelRatio, LOW ? 1.5 : 2);
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR, { type: THREE.HalfFloatType, samples: LOW ? 0 : 4 }));
+composer.setPixelRatio(DPR);
 composer.addPass(new RenderPass(scene, camera));
-const BLOOM = 1.0;
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM, 0.62, 0.8);
+// Ambient occlusion: darkens creases, corners and contact points the way real light does.
+// Glass, particles and anything see-through are left out so they don't fake a surface.
+const gtao = LOW ? null : new GTAOPass(scene, camera, innerWidth, innerHeight);
+if (gtao) {
+  gtao.updateGtaoMaterial({ radius: 3.2, distanceExponent: 1.4, thickness: 1.5, scale: 1.15, samples: 16, distanceFallOff: 1 });
+  gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
+  gtao.blendIntensity = 1;
+  gtao.overrideVisibility = function () {
+    const cache = this._visibilityCache;
+    this.scene.traverse((o) => {
+      cache.set(o, o.visible);
+      if (o.isPoints || o.isLine || o.userData.noAO) { o.visible = false; return; }
+      if (o.isMesh) {
+        const ms = Array.isArray(o.material) ? o.material : [o.material];
+        if (ms.some((m) => m.transparent || m.transmission > 0)) o.visible = false;
+      }
+    });
+  };
+  composer.addPass(gtao);
+}
+let BLOOM = 0.3;
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), BLOOM, 0.5, 0.95);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
@@ -126,6 +172,7 @@ const cyber = new ShaderPass({
     time: { value: 0 },
     glitch: { value: 0 },
     aberration: { value: 0.0028 },
+    fx: { value: 1 }, // 1 = full neon film look, 0 = clean photographic
     resolution: { value: new THREE.Vector2(innerWidth, innerHeight) },
   },
   vertexShader: /* glsl */ `
@@ -133,7 +180,7 @@ const cyber = new ShaderPass({
     void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float time, glitch, aberration;
+    uniform float time, glitch, aberration, fx;
     uniform vec2 resolution;
     varying vec2 vUv;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
@@ -151,9 +198,9 @@ const cyber = new ShaderPass({
         texture2D(tDiffuse, uv + dir * ab).r,
         texture2D(tDiffuse, uv).g,
         texture2D(tDiffuse, uv - dir * ab).b);
-      col *= 0.965 + 0.035 * sin(vUv.y * resolution.y * 1.6);
-      col *= mix(1.0, smoothstep(0.9, 0.22, d), 0.6);
-      col += (hash(vUv * resolution + fract(time * 7.3) * 91.0) - 0.5) * 0.05;
+      col *= mix(1.0, 0.965 + 0.035 * sin(vUv.y * resolution.y * 1.6), fx);
+      col *= mix(1.0, smoothstep(0.9, 0.22, d), 0.35 + 0.25 * fx);
+      col += (hash(vUv * resolution + fract(time * 7.3) * 91.0) - 0.5) * (0.012 + 0.038 * fx);
       gl_FragColor = vec4(col, 1.0);
     }`,
 });
@@ -515,11 +562,12 @@ const MB = { x: 8.8, y: 6.75, z: -10 }; // motherboard centre; board surface at 
 // Modelled on the real case: a dual-chamber "fish tank" with glass on the front and
 // left side, a black steel frame, perforated top / bottom / right side, and the PSU
 // hidden in the rear chamber behind the motherboard tray.
+let pcbMat = null;
 const CASE = { x0: -23, x1: 23, y0: -24, y1: 24, zBack: -24, zTray: -11.2, zGlass: 11.6 };
 function buildCase() {
   const k = kit();
   const shell = new THREE.Group();
-  const steel = phys(0x0c0d10, 0.48, 0.65, { roughnessMap: noiseTex, clearcoat: 0.2, clearcoatRoughness: 0.6 });
+  const steel = phys(0x0e0f12, 0.55, 0.55, { clearcoat: 0.15, clearcoatRoughness: 0.6 }); // satin powder-coated steel
   const meshC = makeCanvas(256, 256), mg = meshC.getContext('2d');
   mg.fillStyle = '#fff'; mg.fillRect(0, 0, 256, 256);
   mg.fillStyle = '#000';
@@ -557,7 +605,11 @@ function buildCase() {
 
   // tempered glass: left side and front, with the green edge real glass has
   const glass = new THREE.Group();
-  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0x9fb0b8, roughness: 0.03, metalness: 0.05, transparent: true, opacity: 0.08, depthWrite: false, clearcoat: 1, envMapIntensity: 1.3 });
+  // Desktop: physically based glass that refracts what's behind it and tints green
+  // through its thickness, like real tempered glass. Phones: a cheaper see-through pane.
+  const glassMat = LOW
+    ? new THREE.MeshPhysicalMaterial({ color: 0x9fb0b8, roughness: 0.03, metalness: 0.05, transparent: true, opacity: 0.08, depthWrite: false, clearcoat: 1, envMapIntensity: 1.3 })
+    : new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.05, metalness: 0, transmission: 1, thickness: 0.4, ior: 1.52, attenuationColor: 0x8fd6bb, attenuationDistance: 6, specularIntensity: 0.6, envMapIntensity: 1.2, depthWrite: false });
   const edgeMat = new THREE.LineBasicMaterial({ color: 0x2fa37c, transparent: true, opacity: 0.6 });
   const pane = (w, h, d, x, y, z) => {
     box(w, h, d, glassMat, x, y, z, glass);
@@ -576,6 +628,7 @@ function buildCase() {
   const streak = new THREE.Mesh(new THREE.PlaneGeometry(W - 1, H - 1), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(streakC), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
   streak.position.z = zGlass + 0.22;
   glass.add(streak);
+  glass.userData.noAO = true;
   scene.add(glass);
   fadeables.push({ id: 'glass', obj: glass, mats: collectMats(glass), offset: new THREE.Vector3(-6, 10, 50), rot: new THREE.Vector3(0.3, -0.5, 0.12), min: 0, sel: 1, home: glass.position.clone() });
 }
@@ -586,7 +639,7 @@ function buildMotherboard() {
   const g = new THREE.Group();
   g.position.set(MB.x, MB.y, MB.z);
   const { map, glow } = pcbTextures();
-  const top = new THREE.MeshPhysicalMaterial({
+  const top = pcbMat = new THREE.MeshPhysicalMaterial({
     map, emissiveMap: glow, emissive: 0xffffff, emissiveIntensity: 0.55, roughness: 0.5, metalness: 0.3,
     bumpMap: map, bumpScale: 1.2, clearcoat: 0.7, clearcoatRoughness: 0.35,
   });
@@ -606,6 +659,13 @@ function buildMotherboard() {
   B(2.3, 10.5, 2.2, heat, 7.45, 7.25);
   for (let i = 0; i < 9; i++) B(0.18, 2.32, 0.2, heatDark, -2.4 + i * 1.3, 13.45, 2.2);
   for (let i = 0; i < 7; i++) B(2.32, 0.18, 0.2, heatDark, 7.45, 3 + i * 1.4, 2.2);
+  // VRM power chokes peeking out from under the top heatsink
+  for (let i = 0; i < 8; i++) B(0.9, 0.9, 0.75, k.gunmetal(), -2.2 + i * 1.3, 11.6);
+  // mounting screws
+  for (const [u, v] of [[-11.3, 14.4], [-11.3, -1], [-11.3, -14.4], [10.9, -1], [10.9, -14.4], [0.9, -14.4]]) {
+    const s = cyl(0.42, 0.25, k.gunmetal(), u, v, S0 + 0.13, g, 18);
+    s.rotation.x = Math.PI / 2;
+  }
 
   // I/O shroud
   B(3.2, 14.3, 3.4, k.plastic(), 10.6, 8.1);
@@ -901,6 +961,10 @@ buildFans();
 buildCables();
 
 // ---------------------------------------------------------------- environment
+// Two worlds share the same PC: a clean photo studio (default) and the rainy neon city.
+const neonWorld = new THREE.Group();
+const studioWorld = new THREE.Group();
+scene.add(neonWorld, studioWorld);
 const FLOOR_Y = -25.6;
 const signs = [];
 const rain = {};
@@ -928,7 +992,8 @@ const splashes = [];
     });
     mirror.rotation.x = -Math.PI / 2;
     mirror.position.y = FLOOR_Y - 0.02;
-    scene.add(mirror);
+    mirror.userData.noAO = true;
+    neonWorld.add(mirror);
   }
   const asphalt = new THREE.Mesh(
     new THREE.PlaneGeometry(1400, 1400),
@@ -940,16 +1005,16 @@ const splashes = [];
   asphalt.rotation.x = -Math.PI / 2;
   asphalt.position.y = FLOOR_Y;
   asphalt.receiveShadow = true;
-  scene.add(asphalt);
+  neonWorld.add(asphalt);
   const grid = new THREE.GridHelper(1400, 230, 0xff2a6d, 0x3a1550);
   grid.position.y = FLOOR_Y + 0.03;
   grid.material.transparent = true;
   grid.material.opacity = 0.16;
   grid.material.depthWrite = false;
-  scene.add(grid);
+  neonWorld.add(grid);
 
   // --- lighting: soft purple ambience, a shadow-casting key light, neon rims
-  scene.add(new THREE.HemisphereLight(0x4a2a8a, 0x05010a, 0.3));
+  neonWorld.add(new THREE.HemisphereLight(0x4a2a8a, 0x05010a, 0.3));
   const key = new THREE.SpotLight(0xf0e8ff, 16000, 0, 0.36, 0.7, 2);
   key.position.set(34, 100, 72);
   key.target.position.set(2, -6, 0);
@@ -959,18 +1024,18 @@ const splashes = [];
   key.shadow.normalBias = 0.03;
   key.shadow.camera.near = 50;
   key.shadow.camera.far = 260;
-  scene.add(key, key.target);
+  neonWorld.add(key, key.target);
   const rimL = new THREE.DirectionalLight(0xff2a6d, 2.2);
   rimL.position.set(-90, 30, -50);
   const rimR = new THREE.DirectionalLight(0x05d9e8, 1.8);
   rimR.position.set(95, 22, 20);
-  scene.add(rimL, rimR);
-  const pl = (c, i, x, y, z) => { const l = new THREE.PointLight(c, i, 0, 2); l.position.set(x, y, z); scene.add(l); };
+  neonWorld.add(rimL, rimR);
+  const pl = (c, i, x, y, z) => { const l = new THREE.PointLight(c, i, 0, 2); l.position.set(x, y, z); neonWorld.add(l); };
   pl(0xdfe6ff, 70, -12, 8, 2);      // soft cool light inside the case
   pl(0xff2a6d, 60, 3, 14, 6);       // a little neon spill through the glass
   pl(0x7a3cff, 90, 2, -14, 6);
 
-  pl(0xe6dcff, 200, -2, 12, 22);
+  pl(0xe6dcff, 200, -2, 12, 8);
   pl(0xbfd6ff, 180, 8, -8, 9);
   pl(0xff2a6d, 240, -34, -20, 34);   // magenta spill on the street
   pl(0x05d9e8, 220, 44, -20, 24);    // cyan spill on the street
@@ -992,11 +1057,11 @@ const splashes = [];
     const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshStandardMaterial({ color: 0x07050e, roughness: 0.6, metalness: 0.4, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.9 }));
     b.position.set(Math.cos(ang) * r, FLOOR_Y + h / 2, Math.sin(ang) * r);
     b.lookAt(0, b.position.y, 0);
-    scene.add(b);
+    neonWorld.add(b);
     if (Math.random() < 0.35) {
       const strip = new THREE.Mesh(new THREE.BoxGeometry(0.8, h * 0.6, 0.8), new THREE.MeshBasicMaterial({ color: new THREE.Color([0xff2a6d, 0x05d9e8, 0xd300c5][i % 3]).multiplyScalar(3) }));
       strip.position.set(b.position.x * 0.94, FLOOR_Y + h * 0.55, b.position.z * 0.94);
-      scene.add(strip);
+      neonWorld.add(strip);
     }
   }
 
@@ -1019,7 +1084,7 @@ const splashes = [];
     m.position.set(...pos);
     m.lookAt(0, pos[1], 0);
     m.rotateY(Math.PI); // face the text toward the PC, not away from it
-    scene.add(m);
+    neonWorld.add(m);
     signs.push({ m, base: scale, flicker, seed: Math.random() * 100, off: 0 });
   };
   sign([{ text: '電', size: 380, font: 'sans-serif' }, { text: '脳', size: 380, font: 'sans-serif' }], 52, 208, [-190, 80, -215], '#ff2a6d', { vertical: true, flicker: true, scale: 3.2 });
@@ -1044,7 +1109,7 @@ const splashes = [];
   rg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const rainLines = new THREE.LineSegments(rg, new THREE.LineBasicMaterial({ color: 0xa8b8ff, transparent: true, opacity: 0.32, depthWrite: false, blending: THREE.AdditiveBlending }));
   rainLines.frustumCulled = false;
-  scene.add(rainLines);
+  neonWorld.add(rainLines);
   Object.assign(rain, { N, pos, speed, spawn, geo: rg });
 
   const ringGeo = new THREE.RingGeometry(0.7, 0.85, 24);
@@ -1053,10 +1118,53 @@ const splashes = [];
     m.rotation.x = -Math.PI / 2;
     m.position.y = FLOOR_Y + 0.06;
     m.visible = false;
-    scene.add(m);
+    neonWorld.add(m);
     splashes.push({ m, life: 1 });
   }
 }
+
+// ---- photo studio: charcoal backdrop, soft rectangular lights, a sharp shadow-casting key
+const STUDIO_BG = 0x0d0e10;
+{
+  RectAreaLightUniformsLib.init();
+  // floor: matte charcoal with a slight sheen, fading into the backdrop through fog
+  const floor = new THREE.Mesh(
+    new THREE.CircleGeometry(600, 128),
+    new THREE.MeshPhysicalMaterial({ color: 0x1b1c1f, roughness: 0.55, metalness: 0, roughnessMap: noiseTex, clearcoat: 0.35, clearcoatRoughness: 0.4 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = FLOOR_Y;
+  floor.receiveShadow = true;
+  studioWorld.add(floor);
+
+  // softboxes (rectangular area lights give soft, wide reflections on metal and glass)
+  const rect = (color, intensity, w, h, pos) => {
+    const l = new THREE.RectAreaLight(color, intensity, w, h);
+    l.position.set(...pos);
+    l.lookAt(0, 0, 0);
+    studioWorld.add(l);
+  };
+  rect(0xffffff, 5, 70, 40, [-18, 80, 55]);   // big overhead key softbox
+  rect(0xfff0e0, 2.2, 30, 70, [-80, 12, 34]); // warm fill from the left
+  rect(0xe4eeff, 3.5, 26, 70, [85, 16, -6]);  // cool rim from the right
+  rect(0xffffff, 2.5, 60, 24, [6, 34, -85]);  // back rim to separate it from the backdrop
+
+  // the key also casts proper shadows
+  const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+  sun.position.set(-26, 95, 48);
+  sun.castShadow = !LOW;
+  sun.shadow.mapSize.set(4096, 4096);
+  Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, near: 20, far: 260 });
+  sun.shadow.bias = -0.0002;
+  sun.shadow.normalBias = 0.025;
+  studioWorld.add(sun);
+  studioWorld.add(new THREE.HemisphereLight(0xffffff, 0x1a1a1c, 0.25));
+  // gentle fill so the inside of the case reads, as a photographer would add
+  const fill = (i, x, y, z) => { const l = new THREE.PointLight(0xf4f6ff, i, 0, 2); l.position.set(x, y, z); studioWorld.add(l); };
+  fill(90, -6, 12, 6);  // inside the glass, so it never glints on it
+  fill(50, 8, -10, 6);
+}
+const FOG = { neon: new THREE.FogExp2(0x0d0526, 0.003), studio: new THREE.Fog(STUDIO_BG, 170, 480) };
 
 // real shadows: solid parts cast and receive them
 scene.traverse((o) => {
@@ -1106,6 +1214,33 @@ function updateWorld(dt, time) {
   }
 }
 
+
+// ---------------------------------------------------------------- Studio / Neon mode
+let MODE = 'studio';
+function setMode(m) {
+  MODE = m === 'neon' ? 'neon' : 'studio';
+  const neon = MODE === 'neon';
+  neonWorld.visible = neon;
+  studioWorld.visible = !neon;
+  scene.environment = neon ? ENV.neon : ENV.studio;
+  scene.background = new THREE.Color(neon ? BG : STUDIO_BG);
+  scene.fog = neon ? FOG.neon : FOG.studio;
+  renderer.toneMapping = neon ? THREE.ACESFilmicToneMapping : THREE.AgXToneMapping;
+  renderer.toneMappingExposure = neon ? 1.1 : 1.15;
+  BLOOM = neon ? 1.0 : 0.3;
+  bloom.strength = BLOOM;
+  bloom.threshold = neon ? 0.8 : 0.95;
+  cyber.uniforms.fx.value = neon ? 1 : 0;
+  cyber.uniforms.aberration.value = neon ? 0.0028 : 0.0006;
+  if (pcbMat) pcbMat.emissiveIntensity = neon ? 0.55 : 0; // real circuit boards don't glow
+  document.body.dataset.mode = MODE;
+  $('mode').textContent = neon ? 'Studio mode' : 'Neon mode';
+  try { localStorage.setItem('rig-mode', MODE); } catch (e) { /* storage blocked: fine */ }
+}
+$('mode').addEventListener('click', () => setMode(MODE === 'neon' ? 'studio' : 'neon'));
+let savedMode = null;
+try { savedMode = localStorage.getItem('rig-mode'); } catch (e) { /* ignore */ }
+setMode(savedMode || 'studio');
 // ---------------------------------------------------------------- data flows between parts
 const flows = [];
 function flow(a, pa, b, pb, color, load, oneWay = false) {
@@ -1162,6 +1297,8 @@ function updateFlows(time) {
     const vis = Math.max(parts[f.pa].sel, parts[f.pb].sel);
     f.pts.material.opacity = vis;
     f.line.material.opacity = 0.22 * vis;
+    // Studio mode is a straight product shot: the glowing data streams only appear once it is blown apart
+    f.pts.visible = f.line.visible = MODE === 'neon' || explodeT > 0.3 || !!selected;
   }
 }
 
@@ -1646,7 +1783,7 @@ function frame() {
   scene.updateMatrixWorld();
   updateFlows(time);
   updateSparks(dt);
-  updateWorld(dt, time);
+  if (neonWorld.visible) updateWorld(dt, time);
   glitch = Math.max(0, glitch - dt * 1.6);
   cyber.uniforms.time.value = time;
   cyber.uniforms.glitch.value = Math.max(glitch, charge * 0.35, Math.random() < 0.004 ? 0.25 : 0);
