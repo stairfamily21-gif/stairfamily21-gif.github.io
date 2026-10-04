@@ -1,7 +1,7 @@
 // Service worker: lets the site install as an app and open offline.
 // Own files: network first (so updates show up), cached copy when offline.
 // Libraries and fonts from CDNs: cache first (they never change at a fixed version).
-const CACHE = 'rig-v1';
+const CACHE = 'rig-v2';
 const CORE = ['./', 'index.html', 'style.css', 'main.js', 'stats.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
