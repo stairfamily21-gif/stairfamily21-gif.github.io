@@ -330,7 +330,8 @@ function bladeGeometry(size) {
   bladeGeos.set(size, g);
   return g;
 }
-function makeFan(k, size, { phase = 0, speed = 9, ringColor = null } = {}) {
+// plain: an ordinary black fan with no RGB (what's actually in the rig). capMat colours the hub sticker.
+function makeFan(k, size, { phase = 0, speed = 9, ringColor = null, plain = false, capMat = null } = {}) {
   const g = new THREE.Group(); // spins around local Z
   const t = size * 0.21, fw = size * 0.075;
   const frame = k.plastic();
@@ -338,23 +339,29 @@ function makeFan(k, size, { phase = 0, speed = 9, ringColor = null } = {}) {
   box(size, fw, t, frame, 0, -size / 2 + fw / 2, 0, g);
   box(fw, size, t, frame, size / 2 - fw / 2, 0, 0, g);
   box(fw, size, t, frame, -size / 2 + fw / 2, 0, 0, g);
-  const ringMat = ringColor ? k.glow(ringColor, 2.4) : k.rgb(phase);
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(size * 0.43, size * 0.018, 8, 64), ringMat);
-  ring.position.z = t * 0.35;
-  g.add(ring);
-  const ring2 = ring.clone(); ring2.position.z = -t * 0.35; g.add(ring2);
+  // round shroud inside the square frame
+  const shroudRing = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.47, size * 0.47, t * 0.96, 48, 1, true), frame);
+  shroudRing.rotation.x = Math.PI / 2;
+  shroudRing.material.side = THREE.DoubleSide;
+  g.add(shroudRing);
+  if (!plain) {
+    const ringMat = ringColor ? k.glow(ringColor, 2.4) : k.rgb(phase);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(size * 0.43, size * 0.018, 8, 64), ringMat);
+    ring.position.z = t * 0.35;
+    g.add(ring);
+    const ring2 = ring.clone(); ring2.position.z = -t * 0.35; g.add(ring2);
+  }
   const rotor = new THREE.Group();
   g.add(rotor);
   const hub = cyl(size * 0.13, t * 0.7, k.black(), 0, 0, 0, rotor);
   hub.rotation.x = Math.PI / 2;
-  const capMat = ringColor ? k.glow(ringColor, 1.2) : k.rgb(phase, 1.4);
-  const cap = cyl(size * 0.07, t * 0.72, capMat, 0, 0, 0.01, rotor);
+  const cap = cyl(size * 0.09, t * 0.72, capMat || (plain ? k.black() : ringColor ? k.glow(ringColor, 1.2) : k.rgb(phase, 1.4)), 0, 0, 0.01, rotor);
   cap.rotation.x = Math.PI / 2;
   const bladeGeo = bladeGeometry(size);
   for (let i = 0; i < 9; i++) {
     const pivot = new THREE.Group();
     pivot.rotation.z = (i / 9) * Math.PI * 2;
-    const b = new THREE.Mesh(bladeGeo, k.blade());
+    const b = new THREE.Mesh(bladeGeo, plain ? k.black() : k.blade());
     b.position.x = size * 0.27;
     b.rotation.z = 0.18;
     pivot.add(b);
@@ -505,70 +512,72 @@ function addPart(id, group, cfg) {
 const MB = { x: 8.8, y: 6.75, z: -10 }; // motherboard centre; board surface at z ≈ -9.92
 
 // ---- case shell (not selectable)
+// Modelled on the real case: a dual-chamber "fish tank" with glass on the front and
+// left side, a black steel frame, perforated top / bottom / right side, and the PSU
+// hidden in the rear chamber behind the motherboard tray.
+const CASE = { x0: -23, x1: 23, y0: -24, y1: 24, zBack: -24, zTray: -11.2, zGlass: 11.6 };
 function buildCase() {
   const k = kit();
   const shell = new THREE.Group();
-  const panel = phys(0x0b0c12, 0.42, 0.7, { roughnessMap: noiseTex, clearcoat: 0.3, clearcoatRoughness: 0.5 });
+  const steel = phys(0x0c0d10, 0.48, 0.65, { roughnessMap: noiseTex, clearcoat: 0.2, clearcoatRoughness: 0.6 });
   const meshC = makeCanvas(256, 256), mg = meshC.getContext('2d');
   mg.fillStyle = '#fff'; mg.fillRect(0, 0, 256, 256);
   mg.fillStyle = '#000';
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    mg.beginPath(); mg.arc(x * 16 + (y % 2) * 8 + 4, y * 16 + 8, 5.2, 0, Math.PI * 2); mg.fill();
+    mg.beginPath(); mg.arc(x * 16 + (y % 2) * 8 + 4, y * 16 + 8, 5.4, 0, Math.PI * 2); mg.fill();
   }
   const meshTex = new THREE.CanvasTexture(meshC);
   meshTex.wrapS = meshTex.wrapT = THREE.RepeatWrapping;
-  meshTex.repeat.set(6, 6);
-  const meshMat = std(0x15181e, 0.45, 0.8, { alphaMap: meshTex, alphaTest: 0.5, side: THREE.DoubleSide });
+  meshTex.repeat.set(7, 7);
+  const perf = phys(0x111216, 0.5, 0.7, { alphaMap: meshTex, alphaTest: 0.5, side: THREE.DoubleSide });
 
-  box(46, 48, 0.4, panel, 0, 0, -11.2, shell);           // motherboard tray
-  box(46, 0.4, 22.4, meshMat, 0, 24, 0, shell);          // top (mesh)
-  box(46, 0.4, 22.4, panel, 0, -24, 0, shell);           // bottom
-  box(0.4, 48, 22.4, meshMat, -23, 0, 0, shell);         // front (mesh)
-  box(0.4, 48, 22.4, panel, 23, 0, 0, shell);            // rear
-  box(46, 0.4, 21.6, panel, 0, -14, 0, shell);           // PSU shroud top
-  box(28, 9.6, 0.4, panel, -9, -19, 10.8, shell);        // shroud front
-  // neon tubes along the inside edges
-  const neonTube = (len, mat, x, y, z, axis) => {
-    const c = cyl(0.22, len, mat, x, y, z, shell, 12);
-    if (axis === 'x') c.rotation.z = Math.PI / 2;
-    return c;
-  };
-  neonTube(44, k.glow(0xff2a6d, 5), 0, 23.4, 10.4, 'x');
-  neonTube(46, k.glow(0x05d9e8, 5), -22.5, 0, 10.4, 'y');
-  neonTube(28, k.glow(0xd300c5, 4), -9, -14.5, 10.6, 'x');
+  const { x0, x1, y0, y1, zBack, zTray, zGlass } = CASE;
+  const W = x1 - x0, H = y1 - y0, D = zGlass - zBack, zMid = (zGlass + zBack) / 2;
+  // frame rails along all 12 edges
+  const r = 0.9;
+  for (const y of [y0, y1]) for (const z of [zBack, zGlass]) box(W, r, r, steel, 0, y, z, shell);
+  for (const x of [x0, x1]) for (const z of [zBack, zGlass]) box(r, H, r, steel, x, 0, z, shell);
+  for (const x of [x0, x1]) for (const y of [y0, y1]) box(r, r, D, steel, x, y, zMid, shell);
+  // perforated top, bottom and right side
+  box(W, 0.3, D, perf, 0, y1, zMid, shell);
+  box(W, 0.3, D, perf, 0, y0, zMid, shell);
+  box(W, H, 0.3, perf, 0, 0, zBack, shell);
+  // motherboard tray: solid behind the board, perforated behind the side intake fans
+  box(29, H, 0.4, steel, 8.5, 0, zTray, shell);
+  box(17, H, 0.4, perf, -14.5, 0, zTray, shell);
+  // rear panel (I/O + PCIe brackets) and the solid front of the rear chamber
+  box(0.4, H, D, steel, x1, 0, zMid, shell);
+  box(0.4, H, zTray - zBack, steel, x0, 0, (zTray + zBack) / 2, shell);
+  // bottom fan mounts (empty in the real build) — just the rails
+  for (const x of [-14, 0, 14]) box(12, 0.25, 0.6, steel, x, y0 + 0.4, 6, shell);
   // feet
-  for (const x of [-19, 19]) for (const z of [-8, 8]) rbox(5, 1.2, 3, 0.4, k.black(), x, -24.8, z, shell);
-  // name plate on the shroud
-  const nameTex = textTex(1024, 256, [
-    { text: 'STAIRFAMILY21', size: 96, color: '#ff4f9a', y: 100, spacing: 10, font: FONT_DISPLAY, weight: 900 },
-    { text: 'RYZEN 7 7800X3D  //  RTX 4070 SUPER', size: 36, font: FONT_MONO, weight: 400, color: '#05d9e8', y: 200, spacing: 3 },
-  ]);
-  decal(nameTex, 24, 6, { glow: 2.2, parent: shell, pos: [-9, -19, 11.02] });
+  for (const x of [-19, 19]) for (const z of [zBack + 4, zGlass - 4]) rbox(5, 1.2, 3, 0.4, k.black(), x, y0 - 0.8, z, shell);
   scene.add(shell);
   fadeables.push({ id: 'shell', obj: shell, mats: collectMats(shell), offset: new THREE.Vector3(0, 0, -20), min: 0.12, sel: 1, home: shell.position.clone() });
 
-  // tempered glass side panel
+  // tempered glass: left side and front, with the green edge real glass has
   const glass = new THREE.Group();
-  // smoked tempered glass, with a soft diagonal reflection streak
-  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0x3a2a5a, roughness: 0.03, metalness: 0.1, transparent: true, opacity: 0.1, depthWrite: false, clearcoat: 1, envMapIntensity: 1.2 });
-  box(46, 48, 0.3, glassMat, 0, 0, 0, glass);
+  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0x9fb0b8, roughness: 0.03, metalness: 0.05, transparent: true, opacity: 0.08, depthWrite: false, clearcoat: 1, envMapIntensity: 1.3 });
+  const edgeMat = new THREE.LineBasicMaterial({ color: 0x2fa37c, transparent: true, opacity: 0.6 });
+  const pane = (w, h, d, x, y, z) => {
+    box(w, h, d, glassMat, x, y, z, glass);
+    const e = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)), edgeMat);
+    e.position.set(x, y, z);
+    glass.add(e);
+  };
+  pane(W - 1, H - 1, 0.4, 0, 0, zGlass);                        // left side glass
+  pane(0.4, H - 1, zGlass - zTray, x0, 0, (zGlass + zTray) / 2); // front glass
   const streakC = makeCanvas(512, 512), sg2 = streakC.getContext('2d');
   const sgr = sg2.createLinearGradient(0, 0, 512, 512);
   sgr.addColorStop(0.18, 'rgba(255,255,255,0)'); sgr.addColorStop(0.3, 'rgba(255,255,255,.07)');
-  sgr.addColorStop(0.36, 'rgba(255,255,255,.05)'); sgr.addColorStop(0.42, 'rgba(255,255,255,.05)');
+  sgr.addColorStop(0.36, 'rgba(255,255,255,.04)'); sgr.addColorStop(0.42, 'rgba(255,255,255,.05)');
   sgr.addColorStop(0.5, 'rgba(255,255,255,0)');
   sg2.fillStyle = sgr; sg2.fillRect(0, 0, 512, 512);
-  const streak = new THREE.Mesh(new THREE.PlaneGeometry(46, 48), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(streakC), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
-  streak.position.z = 0.17;
+  const streak = new THREE.Mesh(new THREE.PlaneGeometry(W - 1, H - 1), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(streakC), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  streak.position.z = zGlass + 0.22;
   glass.add(streak);
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(46, 48, 0.3)),
-    new THREE.LineBasicMaterial({ color: 0xff2a6d, transparent: true, opacity: 0.45 })
-  );
-  glass.add(edges);
-  glass.position.set(0, 0, 11.4);
   scene.add(glass);
-  fadeables.push({ id: 'glass', obj: glass, mats: collectMats(glass), offset: new THREE.Vector3(6, 10, 55), rot: new THREE.Vector3(0.35, -0.6, 0.15), min: 0, sel: 1, home: glass.position.clone() });
+  fadeables.push({ id: 'glass', obj: glass, mats: collectMats(glass), offset: new THREE.Vector3(-6, 10, 50), rot: new THREE.Vector3(0.3, -0.5, 0.12), min: 0, sel: 1, home: glass.position.clone() });
 }
 
 // ---- motherboard
@@ -578,7 +587,7 @@ function buildMotherboard() {
   g.position.set(MB.x, MB.y, MB.z);
   const { map, glow } = pcbTextures();
   const top = new THREE.MeshPhysicalMaterial({
-    map, emissiveMap: glow, emissive: 0xffffff, emissiveIntensity: 1.5, roughness: 0.5, metalness: 0.3,
+    map, emissiveMap: glow, emissive: 0xffffff, emissiveIntensity: 0.55, roughness: 0.5, metalness: 0.3,
     bumpMap: map, bumpScale: 1.2, clearcoat: 0.7, clearcoatRoughness: 0.35,
   });
   const edge = std(0x1a2026, 0.6, 0.3);
@@ -597,10 +606,10 @@ function buildMotherboard() {
   B(2.3, 10.5, 2.2, heat, 7.45, 7.25);
   for (let i = 0; i < 9; i++) B(0.18, 2.32, 0.2, heatDark, -2.4 + i * 1.3, 13.45, 2.2);
   for (let i = 0; i < 7; i++) B(2.32, 0.18, 0.2, heatDark, 7.45, 3 + i * 1.4, 2.2);
-  B(11.6, 0.12, 0.12, k.glow(0xff7a2f, 3), 2.8, 12.25, 2.1);
+
   // I/O shroud
   B(3.2, 14.3, 3.4, k.plastic(), 10.6, 8.1);
-  B(0.12, 12, 0.12, k.rgb(0.6, 2.6), 9.0, 8.1, 3.3);
+
   const aorus = textTex(1024, 192, [{ text: 'AORUS', size: 140, color: '#ffffff', spacing: 18 }]);
   decal(aorus, 10, 1.9, { glow: 1.25, parent: g, pos: [10.6, 8.1, S0 + 3.41], rot: [0, 0, Math.PI / 2] });
   // DIMM slots (A1, A2, B1, B2) — sticks sit in A2 and B2
@@ -665,86 +674,118 @@ function buildCPU() {
   });
 }
 
-// ---- CPU cooler (model unknown — drawn as a single-tower air cooler)
+// ---- CPU cooler: dual-tower air cooler with 6 heat pipes and two black fans (from photos)
 function buildCooler() {
   const k = kit();
   const g = new THREE.Group();
   g.position.set(MB.x + 3, MB.y + 7.5, -2);
-  box(4, 4.4, 0.6, k.copper(), 0, 0, -6.5, g);
-  rbox(4.6, 5, 1, 0.15, k.alu(), 0, 0, -5.7, g);
-  for (const y of [-4.5, -1.5, 1.5, 4.5]) {
-    const p = cyl(0.3, 12.6, k.copper(), 0, y, 0.3, g, 14);
-    p.rotation.x = Math.PI / 2;
+  const nickel = phys(0xcfc8bd, 0.22, 1, { clearcoat: 0.3 });
+  // cold plate + mounting
+  box(4, 4, 0.5, k.copper(), 0, 0, -6.55, g);
+  rbox(5, 5, 1, 0.15, nickel, 0, 0, -5.8, g);
+  box(9.5, 1.2, 0.35, k.gunmetal(), 0, 0, -5.15, g);
+  // six heat pipes, each a U running from the base up through both towers
+  const pipeYs = [-5, -3, -1, 1, 3, 5];
+  for (const y of pipeYs) {
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-4, y, 6.5), new THREE.Vector3(-4, y, -3.6), new THREE.Vector3(-3.2, y, -5.1),
+      new THREE.Vector3(0, y, -5.6), new THREE.Vector3(3.2, y, -5.1), new THREE.Vector3(4, y, -3.6), new THREE.Vector3(4, y, 6.5),
+    ]);
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 60, 0.3, 10, false), nickel));
   }
-  const fins = new THREE.InstancedMesh(new THREE.BoxGeometry(5, 12.5, 0.06), k.alu(), 36);
+  // two fin stacks
+  const finGeo = new THREE.BoxGeometry(5, 12.5, 0.05);
   const m4 = new THREE.Matrix4();
-  for (let i = 0; i < 36; i++) { m4.makeTranslation(0, 0, -3.4 + i * 0.28); fins.setMatrixAt(i, m4); }
-  g.add(fins);
-  rbox(5.4, 12.9, 0.55, 0.2, k.black(), 0, 0, 6.9, g);
-  box(0.18, 12.2, 0.1, k.rgb(0.25, 3), 2.55, 0, 7.15, g);
-  box(0.18, 12.2, 0.1, k.rgb(0.75, 3), -2.55, 0, 7.15, g);
-  const fan = makeFan(k, 12, { phase: 0.5, speed: 7 });
-  fan.rotation.y = -Math.PI / 2;
-  fan.position.set(-3.75, 0, 1.4);
-  g.add(fan);
+  for (const tx of [-4, 4]) {
+    const fins = new THREE.InstancedMesh(finGeo, k.alu(), 38);
+    for (let i = 0; i < 38; i++) { m4.makeTranslation(tx, 0, -4.4 + i * 0.28); fins.setMatrixAt(i, m4); }
+    g.add(fins);
+    // black top cover with the pipe ends poking through
+    rbox(5.4, 12.9, 0.5, 0.18, k.black(), tx, 0, 6.35, g);
+    for (const y of pipeYs) {
+      const capEnd = cyl(0.34, 0.35, nickel, tx, y, 6.75, g, 14);
+      capEnd.rotation.x = Math.PI / 2;
+    }
+  }
+  // fans: one between the towers, one on the front tower
+  const fanMid = makeFan(k, 12, { speed: 7, plain: true, capMat: std(0xd9d9d9, 0.5, 0.1) });
+  fanMid.rotation.y = -Math.PI / 2;
+  fanMid.position.set(0, 0, 0.9);
+  g.add(fanMid);
+  const fanFront = makeFan(k, 12, { speed: 7, plain: true, capMat: std(0xd9d9d9, 0.5, 0.1) });
+  fanFront.rotation.y = -Math.PI / 2;
+  fanFront.position.set(-7.8, 0, 1.9);
+  g.add(fanFront);
   return addPart('cooler', g, {
-    title: MY_PARTS.cooler || 'CPU cooler', short: 'Cooler', color: '#7a9cff',
+    title: MY_PARTS.cooler || 'Dual-tower CPU air cooler', short: 'Cooler', color: '#7a9cff',
     offset: [3, 13, 28], rot: [0, 1.15, 0.1], delay: 0.02,
   });
 }
 
-// ---- RAM
+// ---- RAM: G.Skill Flare X5 — black heat spreaders, no RGB (from photos)
 function buildRAM(i, x) {
   const k = kit();
   const g = new THREE.Group();
-  g.position.set(x, MB.y + 6, -7.7);
-  box(0.12, 13.3, 3.2, std(0x1b4a33, 0.6, 0.2), 0, 0, -0.2, g);
-  for (const s of [-1, 1]) box(0.16, 13.4, 3.7, k.darkMetal(), s * 0.17, 0, 0.15, g);
-  box(0.62, 13.4, 0.18, k.alu(), 0, 0, 2.05, g);
-  const diff = new THREE.MeshBasicMaterial({ map: rainbowTex, color: new THREE.Color(2.4, 2.4, 2.4) });
-  box(0.5, 13.0, 0.7, diff, 0, 0, 2.48, g);
-  const side = textTex(1024, 200, [
-    { text: 'G.SKILL', size: 74, color: '#dfe6ef', x: 210, spacing: 4 },
-    { text: 'DDR5-6000 CL36 · 16GB', size: 40, weight: 600, font: '"Share Tech Mono", monospace', color: '#98a3b5', x: 680 },
-  ]);
-  for (const s of [-1, 1]) decal(side, 12.6, 2.46, { lit: true, parent: g, pos: [s * 0.26, 0, 0.2], rot: [0, s * Math.PI / 2, Math.PI / 2] });
-  anchors['ram' + i] = new THREE.Object3D(); anchors['ram' + i].position.set(0, 0, 2.9); g.add(anchors['ram' + i]);
+  g.position.set(x, MB.y + 6, -7.8);
+  box(0.12, 13.3, 3.0, std(0x1b4a33, 0.6, 0.2), 0, 0, -0.15, g);
+  const spreader = phys(0x101115, 0.42, 0.7, { roughnessMap: noiseTex, clearcoat: 0.25 });
+  for (const s of [-1, 1]) box(0.15, 13.4, 3.3, spreader, s * 0.16, 0, 0.05, g);
+  box(0.47, 13.4, 0.14, spreader, 0, 0, 1.68, g);
+  // side print: "G.SKILL" and "FLARE X5" with the red X
+  const c = makeCanvas(1024, 160), cg = c.getContext('2d');
+  cg.textBaseline = 'middle';
+  cg.font = `700 60px ${FONT_UI}`; cg.fillStyle = '#c9ccd2'; cg.fillText('G.SKILL', 40, 80);
+  cg.font = `italic 700 78px ${FONT_UI}`;
+  let px = 560;
+  for (const [ch, col] of [['F', '#e8e8ea'], ['L', '#e8e8ea'], ['A', '#e8e8ea'], ['R', '#e8e8ea'], ['E', '#e8e8ea'], [' ', '#fff'], ['X', '#e0182d'], [' ', '#fff'], ['5', '#e8e8ea']]) {
+    cg.fillStyle = col; cg.fillText(ch, px, 82); px += cg.measureText(ch).width + 4;
+  }
+  const side = canvasTex(c);
+  for (const s of [-1, 1]) decal(side, 12.8, 2.0, { lit: true, parent: g, pos: [s * 0.245, 0, 0.25], rot: [0, s * Math.PI / 2, Math.PI / 2] });
+  anchors['ram' + i] = new THREE.Object3D(); anchors['ram' + i].position.set(0, 0, 1.9); g.add(anchors['ram' + i]);
   return addPart('ram' + i, g, {
-    title: `RAM stick ${i} · 16 GB`, short: 'RAM ' + i, color: '#ff3df0', info: 'ram',
+    title: `G.Skill Flare X5 · 16 GB (stick ${i})`, short: 'RAM ' + i, color: '#ff3df0', info: 'ram',
     offset: i === 1 ? [-7, 9, 13] : [-13, 6, 17], rot: [0, 0.75, i === 1 ? 0.12 : -0.1], delay: i === 1 ? 0.1 : 0.15,
   });
 }
 
-// ---- GPU
+// ---- GPU: dark shroud, exposed fins along the edge, backlit "GEFORCE RTX" by the bracket (from photos)
 function buildGPU() {
   const k = kit();
   const g = new THREE.Group();
   g.position.set(8, 2.2, -3.6);
-  const shroud = std(0x16191f, 0.38, 0.75);
+  const shroud = phys(0x24272d, 0.4, 0.75, { roughnessMap: noiseTex, clearcoat: 0.3 });
   rbox(27, 4.4, 12, 0.5, shroud, 0, -0.4, 0, g);
-  box(26.6, 0.35, 11.6, std(0x30353e, 0.3, 0.95), 0, 2.0, 0, g);
-  // silver accent bands on the visible edge
-  box(27.05, 0.5, 0.2, k.alu(), 0, 1.2, 5.95, g);
-  box(27.05, 0.5, 0.2, k.alu(), 0, -2.1, 5.95, g);
-  const rtx = textTex(1024, 128, [{ text: 'GEFORCE RTX', size: 96, color: '#ffffff', spacing: 14 }]);
-  decal(rtx, 11, 1.37, { glow: 1.7, parent: g, pos: [-4.5, -0.45, 6.03] });
-  const model = textTex(512, 128, [{ text: '4070 SUPER', size: 80, color: '#8dff5a', weight: 600, font: '"Share Tech Mono", monospace' }]);
-  decal(model, 5.2, 1.3, { glow: 1.5, parent: g, pos: [5.5, -0.45, 6.03] });
-  box(18, 0.14, 0.1, k.glow(0x76ff3d, 3.2), -1, -2.45, 6.02, g);
-  // fans face down toward the PSU shroud
+  box(26.6, 0.35, 11.6, phys(0x2c3037, 0.32, 0.95, { roughnessMap: brushedTex, anisotropy: 0.6 }), 0, 2.0, 0, g);
+  // silver trim on the visible edge
+  box(27.05, 0.28, 0.2, k.gunmetal(), 0, 1.45, 5.95, g);
+  box(27.05, 0.28, 0.2, k.gunmetal(), 0, -2.35, 5.95, g);
+  // exposed heatsink fins visible along the top edge
+  const fins = new THREE.InstancedMesh(new THREE.BoxGeometry(0.05, 2.6, 0.5), phys(0x4a4e55, 0.58, 0.85, { roughnessMap: noiseTex }), 110);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < 110; i++) { m4.makeTranslation(-12.5 + i * 0.16, -0.5, 6.0); fins.setMatrixAt(i, m4); }
+  g.add(fins);
+  // backlit logo near the bracket end, white with a cool blue tint
+  const rtx = textTex(1024, 128, [{ text: 'GEFORCE RTX', size: 100, color: '#dbe6ff', spacing: 10 }]);
+  box(10.2, 1.5, 0.08, k.black(), 7.2, -0.5, 6.22, g);
+  decal(rtx, 9.4, 1.18, { glow: 1.5, parent: g, pos: [7.2, -0.5, 6.28] });
+  const logoLight = new THREE.PointLight(0x9fb8ff, 10, 14, 2);
+  logoLight.position.set(7.2, -0.5, 8);
+  g.add(logoLight);
+  // fans face down
   const fanSpeed = ((gpuS.fanPercent ?? 30) / 100) * 28;
   for (const fx of [-7, 4]) {
-    const f = makeFan(k, 9.6, { speed: fanSpeed, ringColor: 0xd8f7ff });
+    const f = makeFan(k, 9.6, { speed: fanSpeed, plain: true, capMat: k.gunmetal() });
     f.rotation.x = Math.PI / 2;
     f.position.set(fx, -2.7, 0);
     g.add(f);
   }
-  // rear bracket + ports
+  // rear bracket with vent cut-outs + ports
   box(0.15, 5.4, 12.4, k.alu(), 13.6, 0, 0, g);
   for (let i = 0; i < 4; i++) box(0.4, 1.2, 1.8, k.black(), 13.8, 0.4, -4 + i * 2.6, g);
-  // power connector
-  box(2.2, 1.6, 0.8, k.black(), 3, 0.5, 6.3, g);
-  anchors.gpuPower = new THREE.Object3D(); anchors.gpuPower.position.set(3, 0.5, 6.8); g.add(anchors.gpuPower);
+  // power connector (the braided cable plugs in here)
+  box(2.2, 1.0, 0.8, k.black(), 3, -1.6, 6.3, g);
+  anchors.gpuPower = new THREE.Object3D(); anchors.gpuPower.position.set(3, -1.6, 6.8); g.add(anchors.gpuPower);
   anchors.gpu = new THREE.Object3D(); anchors.gpu.position.set(5.75, 2.1, -5.5); g.add(anchors.gpu);
   return addPart('gpu', g, {
     title: gpuS.name || 'Graphics card', short: 'GPU', color: '#8dff5a',
@@ -775,70 +816,74 @@ function buildSSD() {
   });
 }
 
-// ---- PSU (model unknown)
+// ---- PSU (model unknown) — lives in the rear chamber, behind the motherboard tray
 function buildPSU() {
   const k = kit();
   const g = new THREE.Group();
-  g.position.set(14, -19, -2);
-  rbox(15, 8.6, 14, 0.4, std(0x101216, 0.6, 0.5), 0, 0, 0, g);
+  g.position.set(14.5, -14, -17.6);
+  rbox(14, 15, 8.6, 0.4, phys(0x0e0f12, 0.55, 0.55, { roughnessMap: noiseTex }), 0, 0, 0, g);
   const t = textTex(1024, 512, [
     { text: 'POWER', size: 120, color: '#f2f5fa', y: 190, spacing: 20 },
     { text: MY_PARTS.psu || 'SUPPLY', size: MY_PARTS.psu ? 56 : 120, color: '#ff4d6d', y: 320, spacing: MY_PARTS.psu ? 2 : 20 },
   ]);
-  decal(t, 10, 5, { glow: 1.25, parent: g, pos: [0, 0.2, 7.02] });
-  box(13, 0.12, 0.1, k.glow(0xff4d6d, 3), 0, -3.4, 7.02, g);
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) box(0.3, 1.2, 2.2, k.black(), -7.6, 2.4 - r * 2, -4.5 + c * 3, g);
-  anchors.psu = new THREE.Object3D(); anchors.psu.position.set(-5, 4.6, 4); g.add(anchors.psu);
+  decal(t, 10, 5, { glow: 1.1, parent: g, pos: [0, 0.5, 4.32] });
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 2; c++) box(0.3, 1.2, 2.2, k.black(), -7.1, 4.5 - r * 2.2, -1.6 + c * 3.2, g);
+  anchors.psu = new THREE.Object3D(); anchors.psu.position.set(-6, 7.6, 4.3); g.add(anchors.psu);
   return addPart('psu', g, {
     title: MY_PARTS.psu || 'Power supply', short: 'PSU', color: '#ff4d6d',
-    offset: [8, 3, 17], rot: [0.15, -0.55, 0], delay: 0.08,
+    offset: [6, -4, 40], rot: [0.1, -0.55, 0], delay: 0.08,
   });
 }
 
-// ---- case fans
+// ---- case fans: three plain black 120 mm fans on the tray beside the motherboard,
+// pulling air in through the perforated right side panel (from photos)
 function buildFans() {
   const kF = kit();
-  const front = new THREE.Group();
-  front.position.set(-21.2, 5, 0);
-  [12, 0, -12].forEach((y, i) => {
-    const f = makeFan(kF, 12, { phase: i * 0.12, speed: 9 });
-    f.rotation.y = Math.PI / 2;
+  const col = new THREE.Group();
+  col.position.set(-14.5, 2.5, -9.6);
+  const hubSticker = phys(0x8a3a28, 0.45, 0.4, { clearcoat: 0.4 });
+  [12.5, 0, -12.5].forEach((y) => {
+    const f = makeFan(kF, 12, { speed: 9, plain: true, capMat: hubSticker });
+    f.rotation.y = Math.PI; // exhaust side (struts + motor) faces the glass
     f.position.y = y;
-    front.add(f);
+    col.add(f);
   });
-  addPart('frontFans', front, {
-    title: MY_PARTS.fans || 'Front intake fans', short: 'Intake fans', color: '#3de1ff', info: 'fans',
-    offset: [-20, 2, 12], rot: [0, -1.05, 0], delay: 0.04,
-  });
-  const kR = kit();
-  const rear = new THREE.Group();
-  rear.position.set(21.2, 14, 1);
-  const f = makeFan(kR, 12, { phase: 0.55, speed: 9 });
-  f.rotation.y = Math.PI / 2;
-  rear.add(f);
-  addPart('rearFan', rear, {
-    title: MY_PARTS.fans || 'Rear exhaust fan', short: 'Exhaust fan', color: '#3de1ff', info: 'fans',
-    offset: [18, 8, 8], rot: [0, -0.6, 0], delay: 0.04,
+  addPart('frontFans', col, {
+    title: MY_PARTS.fans || 'Side intake fans', short: 'Intake fans', color: '#3de1ff', info: 'fans',
+    offset: [-12, 4, 22], rot: [0, 0.3, 0], delay: 0.04,
   });
 }
 
 // ---- cables (fade away when exploded)
 function buildCables() {
   const grp = new THREE.Group();
-  const sleeve = makeCanvas(64, 256), sg = sleeve.getContext('2d');
-  sg.fillStyle = '#141820'; sg.fillRect(0, 0, 64, 256);
-  for (let y = 0; y < 256; y += 8) { sg.fillStyle = 'rgba(120,140,170,.18)'; sg.fillRect(0, y, 64, 3); }
-  const sleeveTex = new THREE.CanvasTexture(sleeve);
-  sleeveTex.wrapS = sleeveTex.wrapT = THREE.RepeatWrapping;
-  sleeveTex.repeat.set(30, 1);
-  const mat = std(0x6a7184, 0.55, 0.25, { map: sleeveTex });
-  const tube = (pts, r) => {
+  // braided grey GPU power cable
+  const braid = makeCanvas(128, 128), bg = braid.getContext('2d');
+  bg.fillStyle = '#5e6168'; bg.fillRect(0, 0, 128, 128);
+  for (let i = -128; i < 256; i += 10) {
+    bg.strokeStyle = 'rgba(220,224,230,.55)'; bg.lineWidth = 3;
+    bg.beginPath(); bg.moveTo(i, 0); bg.lineTo(i + 128, 128); bg.stroke();
+    bg.strokeStyle = 'rgba(20,22,26,.6)';
+    bg.beginPath(); bg.moveTo(i + 128, 0); bg.lineTo(i, 128); bg.stroke();
+  }
+  const braidTex = new THREE.CanvasTexture(braid);
+  braidTex.colorSpace = THREE.SRGBColorSpace;
+  braidTex.wrapS = braidTex.wrapT = THREE.RepeatWrapping;
+  braidTex.repeat.set(40, 2);
+  const braidMat = std(0xffffff, 0.75, 0.15, { map: braidTex, bumpMap: braidTex, bumpScale: 0.6 });
+  const blackMat = std(0x0d0e11, 0.55, 0.2);
+  const tube = (pts, r, mat) => {
     const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)));
     grp.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 80, r, 12, false), mat));
   };
-  tube([[7, -14.6, 2.5], [-1, -13.2, 4], [-5.2, -5, 3], [-5.5, 6, 0.5], [-3.4, 10.75, -7.6]], 0.75);
-  tube([[12, -14.6, 3.5], [12, -9, 5.2], [11.2, -2, 5], [11, 1, 3.8], [11, 2.7, 3.2]], 0.5);
-  tube([[7.8, 21.7, -9.3], [7.8, 23.3, -10.2], [7.8, 23.4, -11.3]], 0.4);
+  tube([[1.5, -17, -11.4], [2, -15.5, -6], [4.5, -11, 2.5], [8.5, -5, 4.6], [11, -0.7, 3.6], [11, 0.6, 3.25]], 0.62, braidMat);
+  // black 24-pin ribbon from the board edge into the tray grommet
+  for (let i = 0; i < 8; i++) {
+    const y = 8.6 + i * 0.55;
+    tube([[-2.4, y, -8.9], [-4.6, y + 0.2, -8.5], [-6.2, y + 0.4, -10.1], [-6.6, y + 0.4, -11.6]], 0.17, blackMat);
+  }
+  // CPU power (EPS) at the top edge
+  tube([[7.8, 21.7, -9.3], [7.8, 23.0, -10.2], [7.8, 23.1, -11.6]], 0.4, blackMat);
   scene.add(grp);
   fadeables.push({ id: 'cables', obj: grp, mats: collectMats(grp), offset: new THREE.Vector3(), min: 0, sel: 1, home: grp.position.clone() });
 }
@@ -921,10 +966,10 @@ const splashes = [];
   rimR.position.set(95, 22, 20);
   scene.add(rimL, rimR);
   const pl = (c, i, x, y, z) => { const l = new THREE.PointLight(c, i, 0, 2); l.position.set(x, y, z); scene.add(l); };
-  pl(0x05d9e8, 300, -17, 5, 3);
-  pl(0xff2a6d, 150, 3, 14, -2);
-  pl(0x7a3cff, 200, 2, -10, 6);
-  pl(0x8dff5a, 50, 8, -4, 4);
+  pl(0xdfe6ff, 70, -12, 8, 2);      // soft cool light inside the case
+  pl(0xff2a6d, 60, 3, 14, 6);       // a little neon spill through the glass
+  pl(0x7a3cff, 90, 2, -14, 6);
+
   pl(0xe6dcff, 200, -2, 12, 22);
   pl(0xbfd6ff, 180, 8, -8, 9);
   pl(0xff2a6d, 240, -34, -20, 34);   // magenta spill on the street
@@ -1342,19 +1387,20 @@ const INFO = {
   }),
   cooler: () => ({
     eyebrow: 'Cooling', color: '#7a9cff',
-    title: MY_PARTS.cooler || 'CPU cooler',
-    role: 'Pulls heat off the CPU. A copper base touches the processor, heat pipes carry the heat up into a stack of thin aluminum fins, and the fan blows air through them. Without it the 7800X3D would hit its 89 °C limit in seconds and slow itself down.',
+    title: MY_PARTS.cooler || 'Dual-tower CPU air cooler',
+    role: 'Pulls heat off the CPU. A copper base touches the processor, six heat pipes carry the heat up into two tall stacks of thin aluminum fins, and two fans push air through both. Without it the 7800X3D would hit its 89 °C limit in seconds and slow itself down.',
     now: '<p class="role" style="margin:0">Windows doesn’t report cooler speed or temperature without extra software.</p>',
     specs: [
       ['Model', MY_PARTS.cooler || 'Not reported by Windows'],
+      ['Design', 'Dual tower · 6 heat pipes · 2 × 120 mm fans'],
       ['CPU thermal limit', '89 °C'],
       ['CPU heat output', 'up to ~120 W'],
     ],
-    note: MY_PARTS.cooler ? null : 'This is drawn as a tower air cooler. Windows can’t detect the cooler model, so the exact one may look different.',
+    note: MY_PARTS.cooler ? null : 'Modelled from photos of the real build. Windows can’t detect the exact cooler model.',
   }),
   ram: () => ({
     eyebrow: 'Memory · RAM', color: '#ff3df0',
-    title: `G.Skill DDR5-${ramRated || ''} ${ramCL ? ramCL.split('-')[0] : ''} · ${memS.modules ? memS.modules.length + ' × ' + memS.modules[0].capacityGB + ' GB' : ''}`,
+    title: `G.Skill Flare X5 DDR5-${ramRated || ''} ${ramCL ? ramCL.split('-')[0] : ''} · ${memS.modules ? memS.modules.length + ' × ' + memS.modules[0].capacityGB + ' GB' : ''}`,
     role: 'Short-term memory. Anything you have open (the game you’re playing, browser tabs, Windows itself) lives here so the CPU can get to it in nanoseconds. It forgets everything when the power goes off; long-term storage is the SSD’s job.',
     now: meter('In use (whole system)', memS.usedGB, memS.totalGB, `${memS.usedGB} / ${memS.totalGB} GB`, '#ff3df0'),
     specs: [
@@ -1442,14 +1488,15 @@ const INFO = {
   fans: () => ({
     eyebrow: 'Airflow · Case fans', color: '#3de1ff',
     title: MY_PARTS.fans || 'Case fans',
-    role: 'The lungs. The front fans pull cool air in, it flows over the GPU, cooler and motherboard, and the rear fan pushes the hot air out. Good airflow keeps everything cooler and quieter, so the other fans don’t have to work as hard.',
+    role: 'The lungs. These three fans pull cool air in through the perforated side panel and push it across the motherboard, cooler and graphics card. The warm air escapes out the top and back. Good airflow keeps everything cooler and quieter.',
     now: '<p class="role" style="margin:0">Fan speeds aren’t visible to Windows without the motherboard’s own software.</p>',
     specs: [
       ['Model', MY_PARTS.fans || 'Not reported by Windows'],
-      ['Layout', '3 front intake · 1 rear exhaust'],
+      ['Layout', '3 × side intake, stacked'],
       ['Size', '120 mm'],
+      ['Lighting', 'None (plain black)'],
     ],
-    note: MY_PARTS.fans ? null : 'The fan layout here is illustrative. Windows can’t detect how many case fans you have or what model they are.',
+    note: MY_PARTS.fans ? null : 'Laid out from photos of the real build. Windows can’t detect the fan model.',
   }),
 };
 
